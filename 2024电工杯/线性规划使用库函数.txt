@@ -1,0 +1,85 @@
+% 清空环境变量
+clear;
+clc;
+
+% 读取附件1和附件2的数据
+load_data = readtable('load_data.xlsx');
+pv_wind_data = readtable('pv_wind_data.xlsx');
+
+% 提取负荷数据
+load_A = load_data{:, 'load_A'};
+load_B = load_data{:, 'load_B'};
+load_C = load_data{:, 'load_C'};
+
+% 提取风光发电数据
+pv_A = pv_wind_data{:, 'pv_A'};
+pv_C = pv_wind_data{:, 'pv_C'};
+wind_B = pv_wind_data{:, 'wind_B'};
+wind_C = pv_wind_data{:, 'wind_C'};
+
+% 参数设置
+C_grid = 1; % 网购电价 (元/kWh)
+C_power = 800; % 储能功率单价 (元/kW)
+C_energy = 1800; % 储能容量单价 (元/kWh)
+eta_charge = 0.95; % 充电效率
+eta_discharge = 0.95; % 放电效率
+SOC_min = 0.1; % SOC最小值
+SOC_max = 0.9; % SOC最大值
+P_B = 50; % 储能功率 (kW)
+E_B = 100; % 储能容量 (kWh)
+
+% 时间步数 (假设为24小时，每小时一个时间步)
+T = 24;
+
+% 定义决策变量
+P_grid = sdpvar(T,1); % 从主电网购电量
+P_B_in = sdpvar(T,1); % 储能充电功率
+P_B_out = sdpvar(T,1); % 储能放电功率
+SOC = sdpvar(T,1); % 储能SOC
+
+% 目标函数：最小化总成本
+objective = sum(P_grid) * C_grid + P_B * C_power + E_B * C_energy;
+
+% 约束条件
+constraints = [];
+
+% 初始SOC
+constraints = [constraints, SOC(1) == E_B * 0.5];
+
+for t = 1:T
+    % 负荷平衡约束
+    constraints = [constraints, pv_A(t) + wind_B(t) + pv_C(t) + wind_C(t) + P_grid(t) + P_B_out(t) - P_B_in(t) == load_A(t) + load_B(t) + load_C(t)];
+    
+    % 储能充放电约束
+    constraints = [constraints, 0 <= P_B_in(t) <= P_B];
+    constraints = [constraints, 0 <= P_B_out(t) <= P_B];
+    
+    % 储能SOC约束
+    constraints = [constraints, SOC_min * E_B <= SOC(t) <= SOC_max * E_B];
+    
+    % SOC计算约束
+    if t == 1
+        constraints = [constraints, SOC(t) == E_B * 0.5 + eta_charge * P_B_in(t) - P_B_out(t) / eta_discharge];
+    else
+        constraints = [constraints, SOC(t) == SOC(t-1) + eta_charge * P_B_in(t) - P_B_out(t) / eta_discharge];
+    end
+end
+
+% 求解模型
+options = sdpsettings('verbose',1,'solver','gurobi');
+sol = optimize(constraints, objective, options);
+
+% 检查求解结果
+if sol.problem == 0
+    % 求解成功
+    disp('Optimal solution found:');
+    P_grid_opt = value(P_grid)
+    P_B_in_opt = value(P_B_in)
+    P_B_out_opt = value(P_B_out)
+    SOC_opt = value(SOC)
+    total_cost = value(objective)
+else
+    % 求解失败
+    disp('Failed to find optimal solution.');
+    sol.info
+end
